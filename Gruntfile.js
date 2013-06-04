@@ -4,16 +4,22 @@ module.exports = function( grunt ) {
 
     csslint: {
       files: [
-        "public/**/*.css"
+        "public/gallery/**/*.css",
+        "public/stylesheets/search.css"
       ]
     },
     jshint: {
+      options: {
+        es5: true,
+        newcap: false
+      },
       files: [
         "Gruntfile.js",
         "server.js",
         "lib/**/*.js",
-        "public/**/*.js",
-        "routes/**/*.js"
+        "public/js/*.js",
+        "routes/**/*.js",
+        "test/**/*.js"
       ]
     }
   });

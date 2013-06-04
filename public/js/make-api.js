@@ -90,6 +90,130 @@ var module = module || undefined;
     xhrStrategy( type, path, data, callback );
   }
 
+  // Extend a make with some API sugar.
+  function wrap( make, options ) {
+
+    function getMakeInstance() {
+      if ( !getMakeInstance.instance ) {
+        getMakeInstance.instance = Make( options );
+      }
+      return getMakeInstance.instance;
+    }
+
+    // Lazily extract various tags types as needed, and memoize.
+    function lazyInitTags( o, name, regexp ) {
+      delete o[ name ];
+      var tags = [];
+      make.tags.forEach( function( tag ) {
+        if( regexp.test( tag ) ) {
+          tags.push( tag );
+        }
+      });
+      o[ name ] = tags;
+      return tags;
+    }
+
+    var wrapped = {
+      // Application Tags are "webmaker.org:foo", which means two
+      // strings, joined with a ':', and the first string does not
+      // contain an '@'
+      get appTags() {
+        return lazyInitTags( this, 'appTags', /^[^@]+\:[^:]+/ );
+      },
+
+      // User Tags are "some@something.com:foo", which means two
+      // strings, joined with a ':', and the first string contains
+      // an email address (i.e., an '@').
+      get userTags() {
+        return lazyInitTags( this, 'userTags', /^[^@]+@[^@]+\:[^:]+/ );
+      },
+
+      // Raw Tags are "foo" or "#fooBar", which means one string
+      // which does not include a colon.
+      get rawTags() {
+        return lazyInitTags( this, 'rawTags', /^[^:]+$/ );
+      },
+
+      // Determine whether this make is tagged with any of the tags
+      // passed into `tags`.  This can be a String or [ String ],
+      // and the logic is OR vs. AND for multiple.
+      taggedWithAny: function( tags ) {
+        var any = false,
+            all = make.tags;
+        tags = Array.isArray( tags ) ? tags : [ tags ];
+        for( var i = 0; i < tags.length; i++ ) {
+          if ( all.indexOf( tags[ i ] ) > -1 ) {
+            return true;
+          }
+        }
+        return false;
+      },
+
+      // Get a list of other makes that were remixed from this make.
+      // The current make's URL is used as a key.
+      remixes: function( callback ) {
+        callback = callback || function(){};
+        getMakeInstance()
+        .find({ remixedFrom: wrapped._id })
+        .then( callback );
+      },
+
+      // Similar to remixes(), but filter out only those remixes that
+      // have a different locale (i.e., are localized versions of this
+      // make).
+      locales: function( callback ) {
+        callback = callback || function(){};
+        this.remixes( function( err, results ) {
+          if( err ) {
+            callback( err );
+            return;
+          }
+          var locales = [];
+          results.forEach( function( one ) {
+            if ( one.locale !== wrapped.locale ) {
+              locales.push( one );
+            }
+          });
+          callback( null, locales );
+        });
+      },
+
+      // Get the original make used to create this remix. Null is sent
+      // back in the callback if there was no original (not a remix)
+      original: function( callback ) {
+        callback = callback || function(){};
+        if ( !wrapped.remixedFrom ) {
+          callback( null, null );
+          return;
+        }
+        getMakeInstance()
+        .find({ _id: wrapped._id })
+        .then( callback );
+      },
+
+      update: function( email, callback ) {
+        callback = callback || function(){};
+        getMakeInstance()
+        .update( wrapped._id, { maker: email, make: wrapped }, callback );
+      }
+
+    };
+
+    // Extend wrapped with contents of make
+    [ "url", "contentType", "locale", "title",
+      "description", "author", "published", "tags", "thumbnail",
+      "username", "remixedFrom", "_id", "emailHash", "createdAt",
+      "updatedAt" ].forEach( function( prop ) {
+        wrapped[ prop ] = make[ prop ];
+    });
+
+    // Virtuals will only be exposed while still on the server end
+    // forcing us to still manually expose it for client side users.
+    wrapped.id = wrapped._id;
+
+    return wrapped;
+  }
+
   // Shorthand for creating a Make Object
   Make = function Make( options ) {
     apiURL = options.apiURL;
@@ -104,6 +228,7 @@ var module = module || undefined;
     var BASE_QUERY = {
           query: {
             filtered: {
+              filter: {},
               query: {
                 match_all: {}
               }
@@ -116,6 +241,7 @@ var module = module || undefined;
       sortBy: [],
       size: DEFAULT_SIZE,
       pageNum: 1,
+      makerID: "",
 
       find: function( options ) {
         options = options || {};
@@ -138,12 +264,8 @@ var module = module || undefined;
         return this;
       },
 
-      email: function( name ) {
-        this.searchFilters.push({
-          term: {
-            email: name
-          }
-        });
+      user: function( id ) {
+        this.makerID = id;
         return this;
       },
 
@@ -219,11 +341,55 @@ var module = module || undefined;
         return this;
       },
 
+      contentType: function( contentType ) {
+        this.searchFilters.push({
+          term: {
+            contentType: contentType
+          }
+        });
+        return this;
+      },
+
+      remixedFrom: function( projectID ) {
+        this.searchFilters.push({
+          term: {
+            remixedFrom: projectID
+          }
+        });
+        return this;
+      },
+
       id: function( id ) {
         this.searchFilters.push({
           query: {
             field: {
               _id: id
+            }
+          }
+        });
+        return this;
+      },
+
+      title: function( title ) {
+        this.searchFilters.push({
+          query: {
+            query_string: {
+              query: title,
+              fields: [ "title" ],
+              default_operator: "AND"
+            }
+          }
+        });
+        return this;
+      },
+
+      description: function( description ) {
+        this.searchFilters.push({
+          query: {
+            query_string: {
+              query: description,
+              fields: [ "description" ],
+              default_operator: "AND"
             }
           }
         });
@@ -237,7 +403,6 @@ var module = module || undefined;
         searchQuery.from = ( this.pageNum - 1 ) * this.size;
 
         if ( this.searchFilters.length ) {
-          searchQuery.query.filtered.filter = {};
           searchQuery.query.filtered.filter.and = this.searchFilters;
         }
 
@@ -245,13 +410,34 @@ var module = module || undefined;
           searchQuery.sort = this.sortBy;
         }
 
+        if ( this.makerID ) {
+          searchQuery.makerID = this.makerID;
+          this.makerID = "";
+        }
+
         this.size = DEFAULT_SIZE;
         this.pageNum = 1;
         this.searchFilters = [];
         this.sortBy = [];
-        doXHR( "GET", "/api/makes/search", escape( JSON.stringify( searchQuery ) ), callback );
+
+        doXHR( "GET", "/api/makes/search",
+          escape( JSON.stringify( searchQuery ) ),
+          function( err, data ) {
+            if ( err ) {
+              callback( err );
+            } else {
+              // Wrap resulting makes with some extra API.
+              var hits = data;
+              for( var i = 0; i < hits.length; i++ ) {
+                hits[ i ] = wrap( hits[ i ], options );
+              }
+              callback( null, hits );
+            }
+          }
+        );
       },
 
+      // Options should be of the form: { maker: "email@address", make: {...} }
       create: function create( options, callback ) {
         doXHR( "POST", "/api/make", options, callback );
         return this;

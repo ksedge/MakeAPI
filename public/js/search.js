@@ -3,32 +3,53 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
  document.addEventListener( "DOMContentLoaded", function() {
-  var make = Make({
-    apiURL: "",
-    auth: "testuser:password"
-  });
 
-  var makeTitle = document.getElementById( "make-title" ),
-      makeDescription = document.getElementById( "make-description" ),
-      makeAuthor = document.getElementById( "make-author" ),
-      makeEmail = document.getElementById( "make-email" ),
-      makeContentType = document.getElementById( "make-content-type" ),
-      makeLocale = document.getElementById( "make-locale" ),
-      makeUrl = document.getElementById( "make-url" ),
-      makeThumbnail = document.getElementById( "make-thumbnail" ),
-      makeTags = document.getElementById( "make-tags" ),
+  var makeURL = document.getElementById( "makeURL" ),
       searchTags = document.getElementById( "tags" ),
       searchAuthor = document.getElementById( "author" ),
       size = document.getElementById( "size" ),
       page = document.getElementById( "page" ),
       makeTagPrefix = document.getElementById( "tag-prefix" ),
-      makeId = document.getElementById( "make-id" ),
+      idSearch = document.getElementById( "search-make-id" ),
       sortBy = document.getElementById( "sort-field" ),
-      makeResult = document.getElementById( "make-result" ),
+      makerID = document.getElementById( "search-make-username" ),
       searchResult = document.getElementById( "search-result" );
 
+  function make() {
+    var url = makeURL.value || "";
+    return Make({
+      apiURL: url
+    });
+  }
+
+  function processResult( error, data ) {
+    if ( error ) {
+      searchResult.value = JSON.stringify( error, null, 2 );
+    } else {
+      searchResult.value = JSON.stringify( data, null, 2 );
+    }
+  }
+
+  window.searchTitle = function() {
+    make()
+    .title( document.getElementById( "title" ).value )
+    .sortByField( sortBy.value, document.querySelector( "input[name='direction']:checked" ).value )
+    .limit( size.value )
+    .page( page.value || 1 )
+    .then( processResult );
+  };
+
+  window.searchDescription = function() {
+    make()
+    .description( document.getElementById( "description" ).value )
+    .sortByField( sortBy.value, document.querySelector( "input[name='direction']:checked" ).value )
+    .limit( size.value )
+    .page( page.value || 1 )
+    .then( processResult );
+  };
+
   window.grabTags = function() {
-    make
+    make()
     .tags({
       tags: searchTags.value.split( "," ),
       execution: document.querySelector( "input[name='execution']:checked" ).value
@@ -36,17 +57,11 @@
     .sortByField( sortBy.value, document.querySelector( "input[name='direction']:checked" ).value )
     .limit( size.value )
     .page( page.value || 1 )
-    .then(function( error, data ) {
-      if ( error ) {
-        searchResult.value = JSON.stringify( error, null, 2 );
-        return;
-      }
-      searchResult.value = JSON.stringify( data.hits, null, 2 );
-    });
+    .then( processResult );
   };
 
   window.myProjects = function() {
-    make
+    make()
     .tags({
       tags: searchTags.value.split( "," ),
       execution: document.querySelector( "input[name='execution']:checked" ).value
@@ -55,53 +70,45 @@
     .page( page.value || 1 )
     .author( searchAuthor.value )
     .sortByField( sortBy.value, document.querySelector( "input[name='direction']:checked" ).value )
-    .then(function( error, data ) {
-      if ( error ) {
-        searchResult.value = JSON.stringify( error, null, 2 );
-        return;
-      }
-      searchResult.value = JSON.stringify( data.hits, null, 2 );
-    });
+    .then( processResult );
   };
 
   window.findProject = function() {
-    make
-    .find( { id: document.getElementById( "search-make-id" ).value } )
-    .then(function( error, data ) {
-      if ( error ) {
-        searchResult.value = JSON.stringify( error, null, 2 );
-        return;
-      }
-      searchResult.value = JSON.stringify( data, null, 2 );
-    });
+    make()
+    .find( { id: idSearch.value } )
+    .then( processResult );
   };
 
   window.prefixSearch = function() {
-    make
+    make()
     .tagPrefix( makeTagPrefix.value )
     .limit( size.value )
     .page( page.value || 1 )
     .sortByField( sortBy.value, document.querySelector( "input[name='direction']:checked" ).value )
-    .then(function( error, data ) {
-      if ( error ) {
-        searchResult.value = JSON.stringify( error, null, 2 );
-        return;
-      }
-      searchResult.value = JSON.stringify( data.hits, null, 2 );
-    });
+    .then( processResult );
+  };
+
+  window.usernameSearch = function() {
+    make()
+    .user( makerID.value )
+    .then( processResult );
   };
 
   function getData() {
     return {
-      title: makeTitle.value,
-      description: makeDescription.value,
-      author: makeAuthor.value,
-      email: makeEmail.value,
-      contentType: makeContentType.value,
-      locale: makeLocale.value,
-      url: makeUrl.value,
-      thumbnail: makeThumbnail.value,
-      tags: makeTags.value.split( "," )
+      maker: webmakerID.value,
+      make: {
+        title: makeTitle.value,
+        description: makeDescription.value,
+        author: makeAuthor.value,
+        email: makeEmail.value,
+        contentType: makeContentType.value,
+        locale: makeLocale.value,
+        url: makeUrl.value,
+        thumbnail: makeThumbnail.value,
+        tags: makeTags.value.split( "," ),
+        appTags: appTags.value.split( "," )
+      }
     };
   }
 
@@ -110,19 +117,12 @@
       makeResult.value = JSON.stringify( error, null, 2 );
       return;
     }
-    makeId.value = resp._id;
-    makeResult.value = JSON.stringify( resp, null, 2 );
+    try {
+      makeId.value = resp._id;
+      makeResult.value = JSON.stringify( resp, null, 2 );
+    } catch( e ) {
+      makeResult.value = e.toString();
+    }
   }
 
-  window.createMake = function() {
-    make.create( getData(), handleResponse );
-  };
-
-  window.updateMake = function() {
-    make.update( makeId.value, getData(), handleResponse );
-  };
-
-  window.deleteMake = function() {
-    make.remove( makeId.value, handleResponse );
-  };
 }, false );

@@ -3,10 +3,10 @@
 .gitignore
 Gruntfile.js
 server.js
-lib/*
 node_modules/*
 public/js/search.js
+public/js/README.md
+public/js/admin.js
+public/js/external/*
 public/stylesheets/*
-routes/*
 views/*
-test/*

@@ -6,15 +6,17 @@
 
 "use strict";
 
-module.exports = function( makeCtor, env ) {
+module.exports = function( makeCtor, loginApi, env ) {
 
   var Make = makeCtor,
       metrics = require( "../lib/metrics" )( env ),
-      querystring = require( "querystring" );
+      querystring = require( "querystring" ),
+      deferred = require( "deferred" ),
+      getUser = deferred.promisify( loginApi.getUser );
 
   function handleError( res, err, code, type ){
     metrics.increment( "make." + type + ".error" );
-    return res.json( { error: err }, code );
+    res.json( code, { error: err } );
   }
 
   function handleSave( resp, err, make, type ){
@@ -26,34 +28,88 @@ module.exports = function( makeCtor, env ) {
     }
   }
 
+  function updateFields( res, make, body, type ) {
+    Make.publicFields.forEach( function( field ) {
+      // only update if the field exists on the body
+      if ( field in body ) {
+        // arrays need to be concatenated to avoid overwriting elements in the original.
+        if ( Array.isArray( make[ field ] ) ) {
+          make[ field ] = make[ field ].concat( body[ field ] ).filter(function( tag, pos, arr ) {
+            return arr.indexOf( tag ) === pos;
+          });
+        } else {
+          make[ field ] = body[ field ];
+        }
+      }
+    });
+
+    make.email = body.email;
+
+    // If createdAt doesn't exist, we know this is a Create, otherwise stamp updatedAt
+    if ( !make.createdAt ) {
+      make.createdAt = Date.now();
+    } else {
+      make.updatedAt = Date.now();
+    }
+
+    make.save(function( err, make ){
+      return handleSave( res, err, make, type );
+    });
+  }
+
+  function getUserNames( res, results ) {
+    var searchHit;
+
+    // Query for each Make's creator and attach their username to the Make
+    deferred.map( results.hits, function( make ) {
+
+      // Query the Login API for User data using the email attached to the Make
+      return getUser( make.email )
+        .then(function onSuccess( user ) {
+          // Create new object and copy the makes public fields to it
+          searchHit = {};
+          Make.publicFields.forEach(function( val ) {
+            searchHit[ val ] = make[ val ];
+          });
+          // _id, createdAt and updatedAt are not apart of our public fields.
+          // We need to manually assign it to the object we are returning
+          searchHit._id = make._id;
+          searchHit.createdAt = make.createdAt;
+          searchHit.updatedAt = make.updatedAt;
+
+          // Attach the Maker's username and return the result
+          searchHit.username = user.username;
+          searchHit.emailHash = user.emailHash;
+          return searchHit;
+        }, function onError( err ) {
+          handleError( res, err, 500, "search" );
+        });
+    })
+    .then(function onSuccess( result ) {
+      metrics.increment( "make.search.success" );
+      res.json( result );
+    }, function onError( err ) {
+      handleError( res, err, 500, "search" );
+    });
+  }
+
+  function doSearch( res, searchData ) {
+    Make.search( searchData, function( err, results ) {
+      if ( err ) {
+        return handleError( res, err, 500, "search" );
+      } else {
+        getUserNames( res, results );
+      }
+    });
+  }
+
   return {
     create: function( req, res ) {
-      var make = new Make();
-
-      for ( var i in Make.publicFields ){
-        var field = Make.publicFields[ i ];
-        make[ field ] = req.body[ field ];
-      }
-
-      make.createdAt = Date.now();
-
-      make.save(function( err, make ){
-        return handleSave( res, err, make, "create" );
-      });
+      updateFields( res, new Make(), req.body.make, "create" );
     },
     update: function( req, res ) {
       Make.findById( req.params.id ).where( "deletedAt", null ).exec(function( err, make ) {
-        for ( var i in Make.publicFields ) {
-          var field = Make.publicFields[ i ];
-          if ( req.body[ field ] ) {
-            make[ field ] = req.body[ field ];
-          }
-        }
-        make.updatedAt = ( new Date() ).getTime();
-
-        make.save(function( err, make ){
-          handleSave( res, err, make, "update" );
-        });
+        updateFields( res, make, req.body.make, "update" );
       });
     },
     remove: function( req, res ) {
@@ -93,6 +149,11 @@ module.exports = function( makeCtor, env ) {
       } catch ( err ) {
         return handleError ( res, "Unable to parse search data.", 400, "search" );
       }
+
+      if ( !searchData.query.filtered.filter.and ) {
+        searchData.query.filtered.filter.and = [];
+      }
+
       filters = searchData.query.filtered.filter.and;
 
       // We have to unescape any URLs that were present in the data
@@ -103,14 +164,23 @@ module.exports = function( makeCtor, env ) {
         }
       }
 
-      Make.search( searchData, function( err, results ) {
-        if ( err ) {
-          return handleError( res, err, 500, "search" );
-        } else {
-          metrics.increment( "make.search.success" );
-          res.json( results );
-        }
-      });
+      if ( searchData.makerID ) {
+        return loginApi.getUser( searchData.makerID, function( err, userData ) {
+          if ( err ) {
+            return handleError( res, "Specified user does not exist", 400, "search" );
+          }
+          searchData.query.filtered.filter.and.push({
+            term: {
+              email: userData.email
+            }
+          });
+          delete searchData.makerID;
+          doSearch( res, searchData );
+        });
+      }
+
+      doSearch( res, searchData );
+
     },
     healthcheck: function( req, res ) {
       res.json({ http: "okay" });
